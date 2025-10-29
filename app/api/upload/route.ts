@@ -1,8 +1,7 @@
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { analyzeVideo } from "@/lib/analyzer";
-import path from "path";
-import fs from "fs";
 import { getLimits, isActive } from "@/lib/subscription";
 import { isValidRegion, PLATFORM_BY_GAME, GamePlatform } from "@/lib/games";
 
@@ -57,19 +56,18 @@ export async function POST(req: Request) {
 
   const bytes = await file.arrayBuffer();
   const buffer = Buffer.from(bytes);
-  const uploadsDir = path.join(process.cwd(), "public", "uploads");
-  await fs.promises.mkdir(uploadsDir, { recursive: true });
   const filename = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-  const filepath = path.join(uploadsDir, filename);
-  await fs.promises.writeFile(filepath, buffer);
+  const blob = await put(filename, buffer, {
+    access: "public",
+  });
 
-  const relPath = `/uploads/${filename}`;
+  const relPath = blob.url;
+  const filepath = relPath;
 
   // Enforce subscription limits before running analysis
   try {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
-      await fs.promises.unlink(filepath).catch(() => {});
       console.timeEnd("upload_handler");
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
@@ -87,7 +85,6 @@ export async function POST(req: Request) {
       const exceededDaily = limits.daily !== null && dayCount >= limits.daily;
       const exceededMonthly = limits.monthly !== null && monthCount >= limits.monthly;
       if (exceededDaily || exceededMonthly) {
-        await fs.promises.unlink(filepath).catch(() => {});
         console.timeEnd("upload_handler");
         return NextResponse.json({
           error: "Quota exceeded for Free plan",
@@ -119,10 +116,9 @@ export async function POST(req: Request) {
   let headshotRate = Math.random() * 40;
 
   try {
-    aiAnalysis = await analyzeVideo({ clipPath: filepath });
+    aiAnalysis = await analyzeVideo({ videoUrl: filepath });
     // === VALIDATION STEP 1: Gameplay Content ===
     if (aiAnalysis.content_type !== 'gameplay') {
-      await fs.promises.unlink(filepath).catch(() => {});
       console.timeEnd("upload_handler");
       return NextResponse.json({ error: "Video does not appear to be gameplay.", details: `Detected content: ${aiAnalysis.content_type}` }, { status: 422 });
     }
@@ -143,7 +139,6 @@ export async function POST(req: Request) {
     })();
 
     if (mismatch) {
-      await fs.promises.unlink(filepath).catch(() => {});
       console.timeEnd("upload_handler");
       return NextResponse.json({
         error: "Selected game/platform does not match the uploaded clip.",
@@ -175,7 +170,7 @@ export async function POST(req: Request) {
       userId,
       game,
       region,
-      clipPath: relPath,
+      videoUrl: relPath,
       status: "completed",
       summary,
       statsJson: JSON.stringify(stats),

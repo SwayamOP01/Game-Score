@@ -26,7 +26,7 @@ async function tryImport(moduleName: string) {
   }
 }
 
-async function extractMetadata(clipPath: string): Promise<{ duration: number | null; width: number | null; height: number | null; fps: number | null }> {
+async function extractMetadata(videoStream: NodeJS.ReadableStream): Promise<{ duration: number | null; width: number | null; height: number | null; fps: number | null }> {
   const ffprobeStatic = await tryImport('ffprobe-static');
   const ffprobePath: string | null = (ffprobeStatic as any)?.default?.path ?? (ffprobeStatic as any)?.path ?? null;
 
@@ -35,8 +35,9 @@ async function extractMetadata(clipPath: string): Promise<{ duration: number | n
   }
 
   return new Promise((resolve) => {
-    const args = ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', clipPath];
+    const args = ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', 'pipe:0'];
     const p = spawn(ffprobePath, args);
+    videoStream.pipe(p.stdin);
     let buf = '';
     p.stdout.on('data', (d) => (buf += String(d)));
     p.on('close', () => {
@@ -56,7 +57,7 @@ async function extractMetadata(clipPath: string): Promise<{ duration: number | n
   });
 }
 
-async function sampleFrames(clipPath: string, count = 8): Promise<Array<{ t: number; file: string }>> {
+async function sampleFrames(videoStream: NodeJS.ReadableStream, count = 8): Promise<Array<{ t: number; file: string }>> {
   const ffmpegStatic = await tryImport('ffmpeg-static');
   const ffmpegPath: string | null = ffmpegStatic?.default ?? ffmpegStatic?.path ?? null;
   const ffprobeStatic = await tryImport('ffprobe-static');
@@ -64,7 +65,7 @@ async function sampleFrames(clipPath: string, count = 8): Promise<Array<{ t: num
 
   if (!ffmpegPath || !ffprobePath) return [];
 
-  const meta = await extractMetadata(clipPath);
+  const meta = await extractMetadata(videoStream);
   const duration = meta.duration ?? 0;
 
   // Create temp frames directory under .next/cache/frames
@@ -76,8 +77,9 @@ async function sampleFrames(clipPath: string, count = 8): Promise<Array<{ t: num
   if (!duration || duration <= 0) {
     const outPrefix = path.join(framesDir, `frame_${Date.now()}_`);
     await new Promise<void>((resolve) => {
-      const args = ['-i', clipPath, '-vf', 'fps=1', '-frames:v', String(count), `${outPrefix}%02d.jpg`];
+      const args = ['-i', 'pipe:0', '-vf', 'fps=1', '-frames:v', String(count), `${outPrefix}%02d.jpg`];
       const p = spawn(ffmpegPath!, args);
+      videoStream.pipe(p.stdin);
       p.on('close', () => resolve());
     });
     const files = fs.readdirSync(framesDir).filter((f) => f.startsWith(path.basename(outPrefix)) && f.endsWith('.jpg'));
@@ -90,8 +92,9 @@ async function sampleFrames(clipPath: string, count = 8): Promise<Array<{ t: num
     new Promise<{ t: number; file: string }>((resolve) => {
       const outFile = path.join(framesDir, `frame_${Date.now()}_${idx}.jpg`);
       // Use ffmpeg to grab a single frame at timestamp t
-      const args = ['-ss', String(t), '-i', clipPath, '-frames:v', '1', '-q:v', '2', outFile];
+      const args = ['-ss', String(t), '-i', 'pipe:0', '-frames:v', '1', '-q:v', '2', outFile];
       const p = spawn(ffmpegPath, args);
+      videoStream.pipe(p.stdin);
       p.on('close', () => resolve({ t, file: outFile }));
     })
   );
@@ -353,16 +356,22 @@ function computeCheatScore(
   return { cheatFlag, cheatScore: Number(finalScore.toFixed(3)) };
 }
 
-export async function analyzeVideo(input: { clipPath?: string; videoUrl?: string }): Promise<AnalysisResult> {
-  const clipPath = input.clipPath
-    ? path.isAbsolute(input.clipPath)
-      ? input.clipPath
-      : path.join(process.cwd(), 'public', input.clipPath.replace(/^\/+/, ''))
-    : undefined;
+export async function analyzeVideo(input: { videoUrl: string }): Promise<AnalysisResult> {
+  const response1 = await fetch(input.videoUrl);
+  if (!response1.body) {
+    throw new Error("Failed to get video stream from URL for metadata extraction");
+  }
+  const videoStream1 = response1.body as unknown as NodeJS.ReadableStream;
 
-  const resolvedPath = clipPath ?? '';
-  const meta = resolvedPath ? await extractMetadata(resolvedPath) : { duration: null, width: null, height: null, fps: null };
-  const frames = resolvedPath ? await sampleFrames(resolvedPath, 10) : [];
+  const meta = await extractMetadata(videoStream1);
+
+  const response2 = await fetch(input.videoUrl);
+  if (!response2.body) {
+    throw new Error("Failed to get video stream from URL for frame sampling");
+  }
+  const videoStream2 = response2.body as unknown as NodeJS.ReadableStream;
+
+  const frames = await sampleFrames(videoStream2, 10);
   const detections = frames.length ? await detectObjects(frames) : [];
   const classification = await classifyContent(detections, frames, meta);
   const { summary, highlights } = buildSummary(detections, meta.duration);

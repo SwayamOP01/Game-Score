@@ -65,7 +65,7 @@ model Analysis {
   createdAt  DateTime @default(now())
   game       String
   region     String
-  clipPath   String
+  videoUrl    String
   status     String   @default("completed") // "pending" | "completed"
   summary    String
   statsJson  String   // JSON string with detailed stats
