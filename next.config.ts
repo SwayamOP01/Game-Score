@@ -5,11 +5,7 @@ const nextConfig: NextConfig = {
   webpack: (config, { isServer }) => {
     if (isServer) {
       config.externals.push(
-        "ffmpeg-static",
-        "ffprobe-static",
-        "@xenova/transformers",
-        "@tensorflow/tfjs-node",
-        "@tensorflow-models/coco-ssd"
+        /^[^/].*$/ // Externalize all non-absolute paths (i.e., node_modules)
       );
     }
     return config;
