@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    outputFileTracingExcludes: {
+      "**/*": [
+        "public/uploads/**",
+      ],
+    },
+  },
   turbopack: {},
   webpack: (config, { isServer }) => {
     if (isServer) {
